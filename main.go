@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
 
 	"github.com/google/generative-ai-go/genai"
 	"github.com/joho/godotenv"
@@ -17,65 +16,62 @@ const (
 	model = "learnlm-1.5-pro-experimental"
 )
 
-var getWeatherTool = &genai.Tool{
-	FunctionDeclarations: []*genai.FunctionDeclaration{
-		&genai.FunctionDeclaration{
-			Name:        "getWeather",
-			Description: "gets the weather for a requested city",
-			Parameters: &genai.Schema{
-				Type: genai.TypeObject,
-				Properties: map[string]*genai.Schema{
-					"city": &genai.Schema{
-						Type: genai.TypeString,
-					},
-					"country": &genai.Schema{
-						Type: genai.TypeString,
-					},
-				},
-				Required: []string{
-					"city",
-					"country",
-				},
-			},
-		},
-	},
+// WEATHER FUNCTION START
+
+type WeatherRequest struct {
+	City    string `json:"city"`
+	Country string `json:"country"`
 }
 
-type Response struct {
-	GetWeather map[string]interface{} `json:"getWeather"`
+func doGetWeather(request WeatherRequest) string {
+	return fmt.Sprintf("Simüle edilmiş hava durumu: %s, %s için hava güneşli ve 25 derece.", request.City, request.Country)
 }
 
-func printResponse(resp *genai.GenerateContentResponse) {
-	for _, cand := range resp.Candidates {
-		if cand.Content != nil {
-			for _, part := range cand.Content.Parts {
-				str := fmt.Sprintf("%v", part)
+// WEATHER FUNCTION END
 
-				str = strings.Trim(str, "{}")
-				if strings.HasPrefix(str, "getWeather") {
-					mapStr := strings.TrimPrefix(str, "getWeather ")
-					mapStr = strings.Trim(mapStr, "map[]")
+// PROCESS PARTS START
 
-					pairs := strings.Split(mapStr, " ")
-					weatherResp := make(map[string]string)
-
-					for _, pair := range pairs {
-						if strings.Contains(pair, ":") {
-							kv := strings.Split(pair, ":")
-							if len(kv) == 2 {
-								weatherResp[kv[0]] = kv[1]
-							}
-						}
-					}
-
-					// Convert to JSON
-					prettyJSON, _ := json.MarshalIndent(weatherResp, "", "  ")
-					fmt.Println(string(prettyJSON))
-				}
-			}
+func processParts(ctx context.Context, session *genai.ChatSession, parts []genai.Part) {
+	for _, part := range parts {
+		if text, ok := part.(genai.Text); ok {
+			fmt.Println(text)
+		} else if call, ok := part.(genai.FunctionCall); ok {
+			processFunctionCall(ctx, session, call)
 		}
 	}
 }
+
+func processFunctionCall(ctx context.Context, session *genai.ChatSession, call genai.FunctionCall) {
+	if call.Name == "getWeather" {
+		var request WeatherRequest
+
+		argsJSON, err := json.Marshal(call.Args)
+		if err != nil {
+			fmt.Println("Error marshaling args:", err)
+			return
+		}
+
+		if err := json.Unmarshal(argsJSON, &request); err != nil {
+			fmt.Println("Error unmarshaling request:", err)
+			return
+		}
+
+		response := doGetWeather(request)
+
+		fmt.Println(response)
+
+		funcResp := &genai.FunctionResponse{
+			Name: "getWeather",
+			Response: map[string]interface{}{
+				"weather": response,
+			},
+		}
+
+		session.SendMessage(ctx, funcResp)
+	}
+}
+
+// PROCESS PARTS END
 
 func main() {
 	err := godotenv.Load()
@@ -102,7 +98,29 @@ func main() {
 	model.ResponseMIMEType = "text/plain"
 
 	model.Tools = []*genai.Tool{
-		getWeatherTool,
+		{
+			FunctionDeclarations: []*genai.FunctionDeclaration{
+				{
+					Name:        "getWeather",
+					Description: "gets the weather for a requested city",
+					Parameters: &genai.Schema{
+						Type: genai.TypeObject,
+						Properties: map[string]*genai.Schema{
+							"city": {
+								Type: genai.TypeString,
+							},
+							"country": {
+								Type: genai.TypeString,
+							},
+						},
+						Required: []string{
+							"city",
+							"country",
+						},
+					},
+				},
+			},
+		},
 	}
 
 	model.ToolConfig = &genai.ToolConfig{FunctionCallingConfig: &genai.FunctionCallingConfig{
@@ -110,19 +128,11 @@ func main() {
 	}}
 
 	session := model.StartChat()
-	session.History = []*genai.Content{
-		{
-			Role: "user",
-			Parts: []genai.Part{
-				genai.Text("türkiye'de istanbul'da hava durumu nasıl?"),
-			},
-		},
-	}
 
-	resp, err := session.SendMessage(ctx, genai.Text("you are a rest api, you are given a request and you need to respond with the correct response"))
+	resp, err := session.SendMessage(ctx, genai.Text("türkiye'de istanbul'da hava durumu nasıl?"))
 	if err != nil {
-		log.Fatalf("Error sending message: %v", err)
+		panic(err)
 	}
 
-	printResponse(resp)
+	processParts(ctx, session, resp.Candidates[0].Content.Parts)
 }
