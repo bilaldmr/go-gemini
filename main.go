@@ -2,34 +2,27 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 
+	"github.com/enteresanlikk/go-gemini/functions"
 	"github.com/google/generative-ai-go/genai"
 	"github.com/joho/godotenv"
 	"google.golang.org/api/option"
 )
 
-const (
-	model = "learnlm-1.5-pro-experimental"
+var (
+	model   = "learnlm-1.5-pro-experimental"
+	process = make(map[string]functions.Process)
 )
 
-// WEATHER FUNCTION START
+func loadProcesses() {
+	weatherProcess := functions.NewWeatherProcess()
+	process[weatherProcess.Name] = weatherProcess
 
-type WeatherRequest struct {
-	City    string `json:"city"`
-	Country string `json:"country"`
+	fmt.Println(len(process), "processes loaded successfully")
 }
-
-func doGetWeather(request WeatherRequest) string {
-	return fmt.Sprintf("Simüle edilmiş hava durumu: %s, %s için hava güneşli ve 25 derece.", request.City, request.Country)
-}
-
-// WEATHER FUNCTION END
-
-// PROCESS PARTS START
 
 func processParts(ctx context.Context, session *genai.ChatSession, parts []genai.Part) {
 	for _, part := range parts {
@@ -42,36 +35,12 @@ func processParts(ctx context.Context, session *genai.ChatSession, parts []genai
 }
 
 func processFunctionCall(ctx context.Context, session *genai.ChatSession, call genai.FunctionCall) {
-	if call.Name == "getWeather" {
-		var request WeatherRequest
-
-		argsJSON, err := json.Marshal(call.Args)
-		if err != nil {
-			fmt.Println("Error marshaling args:", err)
-			return
-		}
-
-		if err := json.Unmarshal(argsJSON, &request); err != nil {
-			fmt.Println("Error unmarshaling request:", err)
-			return
-		}
-
-		response := doGetWeather(request)
-
-		fmt.Println(response)
-
-		funcResp := &genai.FunctionResponse{
-			Name: "getWeather",
-			Response: map[string]interface{}{
-				"weather": response,
-			},
-		}
-
-		session.SendMessage(ctx, funcResp)
+	if processFunction, ok := process[call.Name]; ok {
+		processFunction.Execute(ctx, session, call)
+	} else {
+		fmt.Println("Process not found:", call.Name)
 	}
 }
-
-// PROCESS PARTS END
 
 func main() {
 	err := godotenv.Load()
@@ -89,6 +58,8 @@ func main() {
 	}
 	defer client.Close()
 
+	loadProcesses()
+
 	model := client.GenerativeModel(model)
 
 	model.SetTemperature(0.8)
@@ -97,30 +68,10 @@ func main() {
 	model.SetMaxOutputTokens(8192)
 	model.ResponseMIMEType = "text/plain"
 
-	model.Tools = []*genai.Tool{
-		{
-			FunctionDeclarations: []*genai.FunctionDeclaration{
-				{
-					Name:        "getWeather",
-					Description: "gets the weather for a requested city",
-					Parameters: &genai.Schema{
-						Type: genai.TypeObject,
-						Properties: map[string]*genai.Schema{
-							"city": {
-								Type: genai.TypeString,
-							},
-							"country": {
-								Type: genai.TypeString,
-							},
-						},
-						Required: []string{
-							"city",
-							"country",
-						},
-					},
-				},
-			},
-		},
+	for _, process := range process {
+		model.Tools = append(model.Tools, &genai.Tool{
+			FunctionDeclarations: []*genai.FunctionDeclaration{&process.FunctionDeclaration},
+		})
 	}
 
 	model.ToolConfig = &genai.ToolConfig{FunctionCallingConfig: &genai.FunctionCallingConfig{
