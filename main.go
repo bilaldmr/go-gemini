@@ -2,50 +2,48 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"log"
 	"os"
 
-	"github.com/enteresanlikk/go-gemini/functions"
+	_ "github.com/enteresanlikk/go-gemini/functions"
+	pkgFunction "github.com/enteresanlikk/go-gemini/pkg/function"
 	"github.com/google/generative-ai-go/genai"
 	"github.com/joho/godotenv"
 	"google.golang.org/api/option"
 )
 
 var (
-	model   = "learnlm-1.5-pro-experimental"
-	process = make(map[string]functions.Process)
+	ErrorLoadingEnv     = errors.New("error loading .env file")
+	ErrorCreatingClient = errors.New("error creating client")
+	ErrorGenerating     = errors.New("error generating")
+	ErrProcessNotFound  = errors.New("process not found")
 )
 
-func loadProcesses() {
-	weatherProcess := functions.NewWeatherProcess()
-	process[weatherProcess.Name] = weatherProcess
-
-	fmt.Println(len(process), "processes loaded successfully")
-}
+var (
+	model = "learnlm-1.5-pro-experimental"
+)
 
 func processParts(ctx context.Context, session *genai.ChatSession, parts []genai.Part) {
 	for _, part := range parts {
-		if text, ok := part.(genai.Text); ok {
-			fmt.Println(text)
-		} else if call, ok := part.(genai.FunctionCall); ok {
+		if call, ok := part.(genai.FunctionCall); ok {
 			processFunctionCall(ctx, session, call)
 		}
 	}
 }
 
 func processFunctionCall(ctx context.Context, session *genai.ChatSession, call genai.FunctionCall) {
-	if processFunction, ok := process[call.Name]; ok {
+	if processFunction, ok := pkgFunction.GetFunction(call.Name); ok {
 		processFunction.Execute(ctx, session, call)
 	} else {
-		fmt.Println("Process not found:", call.Name)
+		log.Fatal(ErrProcessNotFound)
 	}
 }
 
 func main() {
 	err := godotenv.Load()
 	if err != nil {
-		log.Fatal("Error loading .env file")
+		log.Fatal(ErrorLoadingEnv)
 	}
 
 	ctx := context.Background()
@@ -54,11 +52,9 @@ func main() {
 
 	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
 	if err != nil {
-		log.Fatalf("Error creating client: %v", err)
+		log.Fatal(ErrorCreatingClient)
 	}
 	defer client.Close()
-
-	loadProcesses()
 
 	model := client.GenerativeModel(model)
 
@@ -68,9 +64,13 @@ func main() {
 	model.SetMaxOutputTokens(8192)
 	model.ResponseMIMEType = "text/plain"
 
-	for _, process := range process {
+	functions := pkgFunction.GetAllFunctions()
+
+	log.Println(len(functions), "functions loaded successfully")
+
+	for _, function := range functions {
 		model.Tools = append(model.Tools, &genai.Tool{
-			FunctionDeclarations: []*genai.FunctionDeclaration{&process.FunctionDeclaration},
+			FunctionDeclarations: []*genai.FunctionDeclaration{&function.FunctionDeclaration},
 		})
 	}
 
@@ -82,7 +82,7 @@ func main() {
 
 	resp, err := session.SendMessage(ctx, genai.Text("türkiye'de istanbul'da hava durumu nasıl?"))
 	if err != nil {
-		panic(err)
+		log.Fatal(ErrorGenerating)
 	}
 
 	processParts(ctx, session, resp.Candidates[0].Content.Parts)
